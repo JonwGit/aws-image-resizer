@@ -39,7 +39,7 @@ Resources:
     Properties:
       FunctionName: !Ref LambdaFunctionName
       Handler: index.lambda_handler
-      Role: 'arn:aws:iam::123456789012:role/YourLambdaRole' #  Replace with your own IAM role ARN
+      Role: 'arn:aws:iam::12345678910:role/YourLambdaRole' #  Replace with your own IAM role ARN
       Runtime: python3.12
       Timeout: 30
       Layers:
