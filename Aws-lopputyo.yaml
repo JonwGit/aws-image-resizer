@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Lambda function that resizes an image uploaded to the source bucket,
+  saves the modified version to the destination bucket, 
+  and sends an SNS notification.
+
+Parameters:
+  LambdaFunctionName:
+    Description: 'Name of the Lambda function.'
+    Type: String
+    Default: 'ImageResizeFunction'
+  SourceBucketName:
+    Description: 'Name of the S3 bucket where images are uploaded.'
+    Type: String
+  DestinationBucketName:
+    Description: 'Name of the S3 bucket where resized images are stored.'
+    Type: String
+
+Resources:
+  DestinationBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DestinationBucketName
+
+  ImageResizeTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: 'Image Resizing Notifications'
+
+  EmailSubscription2:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: 'replace-with-your-own-email@example.com' #  Replace with your own email address
+      Protocol: email
+      TopicArn: !Ref ImageResizeTopic
+
+  ImageResizeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Handler: index.lambda_handler
+      Role: 'arn:aws:iam::123456789012:role/YourLambdaRole' #  Replace with your own IAM role ARN
+      Runtime: python3.12
+      Timeout: 30
+      Layers:
+        - 'arn:aws:lambda:us-east-1:770693421928:layer:Klayers-p312-Pillow:5'
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          import io
+          from PIL import Image
+          from io import BytesIO
+          import json
+
+          s3 = boto3.client('s3')
+          sns = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              print("Received event:", json.dumps(event))
+              try:
+                  record = event['Records'][0]
+                  source_bucket = record['s3']['bucket']['name']
+                  object_key = record['s3']['object']['key']
+                  print(f"Uploaded {object_key} from bucket {source_bucket}")
+                  
+                  # Download image
+                  response = s3.get_object(Bucket=source_bucket, Key=object_key)
+                  content_type = response['ContentType']
+                  image_data = response['Body'].read()
+                  
+                  # Resize: max 800x800
+                  image = Image.open(BytesIO(image_data))
+                  image.thumbnail((800, 800))
+                  
+                  # Save resized image to memory
+                  buffer = BytesIO()
+                  image_format = image.format if image.format else "JPEG"
+                  image.save(buffer, format=image_format, quality=75)
+                  buffer.seek(0)
+                  
+                  # Upload resized image to destination bucket
+                  destination_bucket = os.environ.get('DESTINATION_BUCKET')
+                  destination_key = "resized/" + object_key
+                  s3.put_object(Bucket=destination_bucket, Key=destination_key, Body=buffer, ContentType=content_type)
+                  print(f"Resized image uploaded to {destination_bucket}")
+                  
+                  # Publish SNS notification
+                  sns_topic = os.environ.get('SNS_TOPIC_ARN')
+                  message = f"Image {object_key} has been resized and uploaded to {destination_bucket}"
+                  sns.publish(TopicArn=sns_topic, Message=message, Subject="Image resized successfully")
+                  print("Notification sent to SNS")
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Image resized and notification sent!')
+                  }
+              except Exception as e:
+                  print("Error processing image:", str(e))
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f"Error processing image: {str(e)}")
+                  }
+      Environment:
+        Variables:
+          DESTINATION_BUCKET: !Ref DestinationBucketName
+          SNS_TOPIC_ARN: !Ref ImageResizeTopic
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ImageResizeLambda
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${SourceBucketName}
+
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SourceBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: '.jpg'
+            Function: !GetAtt ImageResizeLambda.Arn
+    DependsOn:
+      - ImageResizeLambda
+      - LambdaInvokePermission
+
+Outputs:
+  SourceBucketOutput:
+    Description: 'Source bucket where images are uploaded'
+    Value: !Ref SourceBucket
+
+  DestinationBucketOutput:
+    Description: 'Destination bucket where resized images are stored'
+    Value: !Ref DestinationBucket
+
+  LambdaFunctionOutput:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt ImageResizeLambda.Arn
+
+  SNSTopicOutput:
+    Description: 'SNS Topic for notifications'
+    Value: !Ref ImageResizeTopic
